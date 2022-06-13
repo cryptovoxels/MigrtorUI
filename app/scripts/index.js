@@ -8,6 +8,9 @@ import contract from 'truffle-contract'
 
 // Import our contract artifacts and turn them into usable abstractions.
 import metaCoinArtifact from '../../build/contracts/MetaCoin.json'
+import oldparcelArtifact from '../../build/contracts/OldParcel.json'
+import parcelArtifact from '../../build/contracts/Parcel.json'
+import migratorArtifact from '../../build/contracts/ParcelMigrator.json'
 import IPaymaster from '../../build/contracts/IPaymaster.json'
 import { networks } from './networks'
 
@@ -15,8 +18,9 @@ const Gsn = require('@opengsn/provider')
 
 const RelayProvider = Gsn.RelayProvider
 
-// MetaCoin is our usable abstraction, which we'll use through the code below.
-const MetaCoin = contract(metaCoinArtifact)
+const Parcel = contract(parcelArtifact)
+const OldParcel = contract(oldparcelArtifact)
+const Migrator = contract(migratorArtifact)
 
 // The following code is simple to show off interacting with your contracts.
 // As your needs grow you will likely need to change its form and structure.
@@ -31,28 +35,31 @@ const App = {
     const self = this
     // This should actually be web3.eth.getChainId but MM compares networkId to chainId apparently
     web3.eth.net.getId(async function (err, networkId) {
+      console.log({networkId})
       if (parseInt(networkId) < 1000) { // We're on testnet/
         network = networks[networkId]
-        MetaCoin.deployed = () => MetaCoin.at(network.metacoin)
-      } else { // We're on ganache
-        console.log('Using local ganache')
-        network = {
-          relayHub: require('../../build/gsn/RelayHub.json').address,
-          paymaster: require('../../build/gsn/Paymaster.json').address,
-          forwarder: require('../../build/gsn/Forwarder.json').address
-        }
-      }
-      if (!network) {
-        const fatalmessage = document.getElementById('fatalmessage')
-        fatalmessage.innerHTML = "Wrong network. please switch to 'kovan' or 'ropsten' or 'rinkeby'"
-        return
-      }
-      console.log('chainid=', networkId, network)
+        Parcel.deployed = () => Parcel.at(network.parcel)
+        OldParcel.deployed = () => OldParcel.at(network.oldparcel)
+        Migrator.deployed = () => Migrator.at(network.migrator)
 
-      if (err) {
-        console.log('Error getting chainId', err)
-        process.exit(-1)
+        console.log(window.ethereum)
+        const web3 = new Web3(window.ethereum);
+        Parcel.setProvider(web3.currentProvider)
+        OldParcel.setProvider(web3.currentProvider)
+        accounts = await web3.eth.getAccounts();
+        console.log({accounts})
+        account = accounts[0];
+        const oldparcelInstance = await OldParcel.deployed();
+        const parcelInstance = await Parcel.deployed();
+       
+        // minting process from old parcel
+        // console.log("minting", accounts)
+        // await oldparcelInstance.mint(accounts[0],1,3,3,3,4,4,4,0, {from: accounts[0]})
+        // console.log("minted")
+        // await oldparcelInstance.setApprovalForAll(network.migrator,true,{from: accounts[0]}) 
+        // await parcelInstance.transferOwnership(network.migrator, {from: accounts[0]})
       }
+
       const gsnConfig = {
         relayLookupWindowBlocks: 600000,
         loggerConfigration: {
@@ -64,26 +71,7 @@ const App = {
       await provider.init()
       web3.setProvider(provider)
 
-      // Bootstrap the MetaCoin abstraction for Use.
-      MetaCoin.setProvider(web3.currentProvider)
-
-      // Get the initial account balance so it can be displayed.
-      web3.eth.getAccounts(function (err, accs) {
-        if (err != null) {
-          alert('There was an error fetching your accounts.')
-          return
-        }
-
-        if (accs.length === 0) {
-          alert("Couldn't get any accounts! Make sure your Ethereum client is configured correctly.")
-          return
-        }
-
-        accounts = accs
-        account = accounts[0]
-
-        self.refreshBalance()
-      })
+      Migrator.setProvider(web3.currentProvider)
     })
   },
 
@@ -104,90 +92,20 @@ const App = {
     return '<a href="' + network.txUrl + addr + '" target="_info">' + addr + '</a>'
   },
 
-  refreshBalance: function () {
+  migrate: function () {
     const self = this
-
-    function putItem (name, val) {
-      const item = document.getElementById(name)
-      item.innerHTML = val
-    }
-    function putAddr (name, addr) {
-      putItem(name, self.addressLink(addr))
-    }
-
-    putAddr('paymaster', network.paymaster)
-
-    new web3.eth.Contract(IPaymaster.abi, network.paymaster).methods
-      .getHubAddr().call().then(hub => {
-        putAddr('hubaddr', hub)
-      }).catch(console.log)
-
-    new web3.eth.Contract(IPaymaster.abi, network.paymaster).methods
-      .getRelayHubDeposit().call().then(bal => {
-        putItem('paymasterBal', '- eth balance: ' + (bal / 1e18))
-      }).catch(console.log)
-
-    new web3.eth.Contract(IPaymaster.abi, network.paymaster).methods
-      .trustedForwarder().call().then(forwarder => {
-        putAddr('forwarderAddress', forwarder)
-      }).catch(console.log)
-
-    let meta
-    MetaCoin.deployed().then(function (instance) {
-      meta = instance
-      putAddr('address', account)
-      putAddr('metaaddr', MetaCoin.address)
-
-      return meta.balanceOf.call(account, { from: account })
-    }).then(function (value) {
-      const balanceElement = document.getElementById('balance')
-      balanceElement.innerHTML = value.valueOf()
-
-    }).catch(function (e) {
-      const fatalmessage = document.getElementById('fatalmessage')
-      console.log(e)
-      if (/mismatch/.test(e)) {
-        fatalmessage.innerHTML = "Wrong network. please switch to 'kovan', 'rinekby', or 'ropsten' "
-      }
-      self.setStatus('Error getting balance; see log.')
-    })
-  },
-
-  mint: function () {
-    const self = this
-    MetaCoin.deployed().then(function (instance) {
-      self.setStatus('Mint: Initiating transaction... (please wait)')
-      return instance.mint({ from: account })
+    Migrator.deployed().then(async function (instance) {
+      self.setStatus('Migrating... (please wait)')
+      
+      return instance.migrate([1],{from: account})
     }).then(function (res) {
-      self.refreshBalance()
+      // self.refreshBalance()
       self.setStatus('Mint transaction complete!<br>\n' + self.txLink(res.tx))
     }).catch(function (err) {
       console.log('mint error:', err)
       self.setStatus('Error getting balance; see log.')
     })
   },
-
-  transfer: function () {
-    const self = this
-
-    const amount = parseInt(document.getElementById('amount').value)
-    const receiver = document.getElementById('receiver').value
-
-    this.setStatus('Initiating transaction... (please wait)')
-
-    let meta
-    MetaCoin.deployed().then(function (instance) {
-      meta = instance
-      return meta.transfer(receiver, amount,
-        { from: account })
-    }).then(function (res) {
-      self.setStatus('Transaction complete!<br>\n' + self.txLink(res.tx))
-      self.refreshBalance()
-    }).catch(function (e) {
-      console.log(e)
-      self.setStatus('Error sending coin; see log.')
-    })
-  }
 }
 
 window.App = App
